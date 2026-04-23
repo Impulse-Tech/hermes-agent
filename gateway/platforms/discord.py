@@ -1106,7 +1106,16 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                # Return failure instead of silently truncating — the stream
+                # consumer's fallback path will send the full text as properly
+                # chunked new messages with (1/N) indicators.  Silent
+                # truncation causes data loss because the consumer marks the
+                # message as delivered and never retries.  (Fixes truncation
+                # in long-response threads like dev-stock/Strategy-and-Plan.)
+                return SendResult(
+                    success=False,
+                    error=f"Message length {len(formatted)} exceeds Discord limit {self.MAX_MESSAGE_LENGTH}",
+                )
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
