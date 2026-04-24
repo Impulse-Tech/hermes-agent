@@ -3006,6 +3006,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
+            # Resolve remaining <@ID> mentions to @DisplayName so the LLM can see
+            # who is being mentioned.  Without this, the PII redaction layer
+            # (agent/redact.py) replaces the snowflake ID with "***", making it
+            # impossible for the agent to know who mentioned it.
+            # Uses message.mentions (resolved by Discord) — falls back to
+            # guild member lookup for IDs not in the mentions list.
+            if isinstance(message.channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
+                resolved = {}  # id -> display_name cache for this message
+                for mentioned in message.mentions:
+                    resolved[str(mentioned.id)] = mentioned.display_name
+
+                def _resolve_mention(match):
+                    uid = match.group(1)
+                    if uid not in resolved:
+                        # Try guild member cache for IDs not in .mentions
+                        member = message.channel.guild.get_member(int(uid))
+                        if member:
+                            resolved[uid] = member.display_name
+                        else:
+                            return match.group(0)  # leave unresolvable mentions as-is
+                    return f"@{resolved[uid]}"
+
+                message.content = re.sub(r"<@!?(\d{17,20})>", _resolve_mention, message.content)
+            elif isinstance(message.channel, discord.DMChannel):
+                # In DMs, only the two participants exist — resolve from mentions
+                for mentioned in message.mentions:
+                    message.content = message.content.replace(
+                        f"<@{mentioned.id}>", f"@{mentioned.display_name}"
+                    ).replace(
+                        f"<@!{mentioned.id}>", f"@{mentioned.display_name}"
+                    )
+
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
