@@ -4729,6 +4729,21 @@ class GatewayRunner:
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
+
+            # Update Discord adapter's response prefix context with the
+            # actual model used for this reply (important for fallbacks).
+            # This must happen before the response is sent via adapter.send().
+            _prefix_adapter = self.adapters.get(source.platform)
+            if (
+                source.platform == Platform.DISCORD
+                and _prefix_adapter
+                and hasattr(_prefix_adapter, "update_response_prefix_context")
+            ):
+                try:
+                    _resolved_model = agent_result.get("model") or _resolve_gateway_model()
+                    _prefix_adapter.update_response_prefix_context(model_full=_resolved_model)
+                except Exception:
+                    pass
             
             # Check for pending process watchers (check_interval on background processes)
             try:
