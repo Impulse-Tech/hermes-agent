@@ -857,6 +857,11 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Response prefix prepended to every Discord reply message.
+        # Default (empty string) means no prefix — this is an opt-in feature.
+        # Template variables: {name}, {model}, {modelFull}, {provider}
+        # Example: "[{name} · {model}]" → "[Hermes · glm-5.1]"
+        "response_prefix": "",
     },
 
     # WhatsApp platform settings (gateway mode)
