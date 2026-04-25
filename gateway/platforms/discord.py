@@ -552,6 +552,13 @@ class DiscordAdapter(BasePlatformAdapter):
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Bot edit handling: other bots (e.g., OpenClaw/Niro) send stub messages
+        # then edit them to add full content.  Track message IDs so on_message_edit
+        # can update pending batches before they flush.
+        self._bot_edit_delay_seconds = float(os.getenv("HERMES_DISCORD_BOT_EDIT_DELAY_SECONDS", "3.0"))
+        self._message_id_to_batch_key: Dict[str, str] = {}  # message_id → batch_key
+        self._recently_dispatched: Dict[str, tuple] = {}  # message_id → (session_key, text, timestamp)
+        self._max_recently_dispatched = 200
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -780,6 +787,105 @@ class DiscordAdapter(BasePlatformAdapter):
                         return
 
                 await self._handle_message(message)
+
+            @self._client.event
+            async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
+                """Handle message edits — primarily for bot messages (e.g., OpenClaw/Niro)
+                that send a stub first and then edit with the full content.
+
+                Two cases:
+                1. Message is still in a pending text batch → update the text in-place.
+                2. Message was already dispatched → inject a supplementary event with
+                   the updated content so the agent sees the full message.
+                """
+                # Always ignore our own messages
+                if after.author == self._client.user:
+                    return
+
+                # Only process edits from bots (human edits don't change meaning enough
+                # to warrant re-processing, and would cause duplicate responses)
+                if not getattr(after.author, "bot", False):
+                    return
+
+                msg_id = str(after.id)
+                new_text = after.content or ""
+                old_text = before.content or ""
+
+                # If the edit didn't actually change the text, skip
+                if new_text == old_text:
+                    return
+
+                # Case 1: Message is still in a pending batch
+                batch_key = adapter_self._message_id_to_batch_key.get(msg_id)
+                if batch_key:
+                    pending_event = adapter_self._pending_text_batches.get(batch_key)
+                    if pending_event:
+                        # Update the text in the pending event
+                        logger.info(
+                            "[Discord] on_message_edit: updating pending batch %s "
+                            "for msg %s (%d → %d chars)",
+                            batch_key, msg_id, len(old_text), len(new_text),
+                        )
+                        # Find and replace the old text fragment within the batch
+                        # (the batch may have concatenated multiple messages)
+                        if old_text and old_text in pending_event.text:
+                            pending_event.text = pending_event.text.replace(old_text, new_text, 1)
+                        else:
+                            # Old text not found as-is; just replace the entire batch
+                            pending_event.text = new_text
+                        return
+
+                # Case 2: Message was already dispatched
+                dispatched = adapter_self._recently_dispatched.get(msg_id)
+                if dispatched:
+                    session_key, dispatched_text, ts = dispatched
+                    # Only inject if the new text is substantially different
+                    # (avoid re-injecting for minor typo fixes)
+                    if new_text == dispatched_text:
+                        return
+                    logger.info(
+                        "[Discord] on_message_edit: injecting edit for already-dispatched "
+                        "msg %s (%d → %d chars, age=%.1fs)",
+                        msg_id, len(dispatched_text), len(new_text),
+                        (datetime.now() - ts).total_seconds(),
+                    )
+                    # Build a supplementary MessageEvent from the edited message
+                    is_thread = isinstance(after.channel, discord.Thread)
+                    thread_id = str(after.channel.id) if is_thread else None
+                    effective_channel = after.channel.parent if is_thread else after.channel
+                    chat_name = getattr(effective_channel, 'name', 'dm')
+                    if hasattr(effective_channel, 'guild') and effective_channel.guild:
+                        chat_name = f"{effective_channel.guild.name} / #{chat_name}"
+                    chat_type = "dm" if isinstance(after.channel, discord.DMChannel) else ("thread" if is_thread else "group")
+                    source = adapter_self.build_source(
+                        chat_id=str(effective_channel.id),
+                        chat_name=chat_name,
+                        chat_type=chat_type,
+                        user_id=str(after.author.id),
+                        user_name=after.author.display_name,
+                        thread_id=thread_id,
+                        is_bot=True,
+                    )
+                    edit_event = MessageEvent(
+                        text=f"[EDIT] {new_text}",
+                        source=source,
+                        raw_message=after,
+                        message_id=f"{msg_id}_edit_{int(datetime.now().timestamp())}",
+                        timestamp=datetime.now(),
+                    )
+                    # Dispatch directly (not through text batching)
+                    await adapter_self.handle_message(edit_event)
+                    # Update the dispatched record
+                    adapter_self._recently_dispatched[msg_id] = (session_key, new_text, ts)
+                    return
+
+                # Case 3: Message not tracked at all — might have arrived before
+                # this handler was registered, or the message is too old.
+                # No action needed for now.
+                logger.debug(
+                    "[Discord] on_message_edit: untracked msg %s (author=%s, %d chars)",
+                    msg_id, after.author, len(new_text),
+                )
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -3641,6 +3747,9 @@ class DiscordAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Track ALL message IDs in this batch so edits to any of them
+            # can be resolved after dispatch (fixes bot stub→edit truncation).
+            event._all_message_ids = [str(event.message_id)] if event.message_id else []  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
             if event.text:
@@ -3649,6 +3758,22 @@ class DiscordAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            # Accumulate message IDs from merged events
+            if event.message_id:
+                all_ids = getattr(existing, "_all_message_ids", [])
+                all_ids.append(str(event.message_id))
+                existing._all_message_ids = all_ids  # type: ignore[attr-defined]
+
+        # Track message_id → batch_key so on_message_edit can find the batch
+        if event.message_id:
+            self._message_id_to_batch_key[str(event.message_id)] = key
+
+        # Track whether this batch contains a bot message (for longer flush delay)
+        is_bot = getattr(event.source, "is_bot", False) if event.source else False
+        if not is_bot and existing:
+            is_bot = getattr(existing, "_contains_bot", False)
+        if is_bot:
+            self._pending_text_batches[key]._contains_bot = True  # type: ignore[attr-defined]
 
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -3661,23 +3786,49 @@ class DiscordAdapter(BasePlatformAdapter):
         """Wait for the quiet period then dispatch the aggregated text.
 
         Uses a longer delay when the latest chunk is near Discord's 2000-char
-        split point, since a continuation chunk is almost certain.
+        split point, since a continuation chunk is almost certain.  Also uses
+        a longer delay when the batch contains a bot message, because other
+        bots (e.g., OpenClaw/Niro) often send a stub and then edit it with
+        the full content.
         """
         current_task = asyncio.current_task()
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            contains_bot = getattr(pending, "_contains_bot", False) if pending else False
             if last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
+            elif contains_bot:
+                delay = self._bot_edit_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
+            # Clean up message_id → batch_key mapping
+            for mid in list(self._message_id_to_batch_key.keys()):
+                if self._message_id_to_batch_key[mid] == key:
+                    del self._message_id_to_batch_key[mid]
+            # Track recently dispatched messages for on_message_edit.
+            # Store ALL message IDs that were merged into this batch so edits
+            # to any of them (not just the last) can be resolved.
+            all_msg_ids = getattr(event, "_all_message_ids", [])
+            if not all_msg_ids and event.message_id:
+                all_msg_ids = [str(event.message_id)]
+            if all_msg_ids:
+                from datetime import datetime as _dt
+                now = _dt.now()
+                for mid in all_msg_ids:
+                    self._recently_dispatched[mid] = (key, event.text or "", now)
+                # Evict oldest entries if over limit
+                if len(self._recently_dispatched) > self._max_recently_dispatched:
+                    oldest = sorted(self._recently_dispatched.items(), key=lambda x: x[1][2])[:len(self._recently_dispatched) - self._max_recently_dispatched]
+                    for mid, _ in oldest:
+                        del self._recently_dispatched[mid]
             logger.info(
-                "[Discord] Flushing text batch %s (%d chars)",
-                key, len(event.text or ""),
+                "[Discord] Flushing text batch %s (%d chars, bot=%s)",
+                key, len(event.text or ""), contains_bot,
             )
             # Shield the downstream dispatch so that a subsequent chunk
             # arriving while handle_message is mid-flight cannot cancel
