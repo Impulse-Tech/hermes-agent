@@ -1648,7 +1648,15 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                # Return failure instead of silently truncating — the stream
+                # consumer's fallback path will send the full text as properly
+                # chunked new messages with (1/N) indicators.  Silent
+                # truncation causes data loss because the consumer marks the
+                # message as delivered and never retries.
+                return SendResult(
+                    success=False,
+                    error=f"Message length {len(formatted)} exceeds Discord limit {self.MAX_MESSAGE_LENGTH}",
+                )
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
@@ -4528,6 +4536,39 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+
+        # Resolve remaining <@ID> mentions to @DisplayName so the LLM can see
+        # who is being mentioned.  Without this, the PII redaction layer
+        # (agent/redact.py) replaces the snowflake ID with "***", making it
+        # impossible for the agent to know who mentioned it.
+        # Uses message.mentions (resolved by Discord) — falls back to
+        # guild member lookup for IDs not in the mentions list.
+        if isinstance(message.channel, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
+            resolved = {}  # id -> display_name cache for this message
+            for mentioned in message.mentions:
+                resolved[str(mentioned.id)] = mentioned.display_name
+
+            def _resolve_mention(match):
+                uid = match.group(1)
+                if uid not in resolved:
+                    # Try guild member cache for IDs not in .mentions
+                    member = message.channel.guild.get_member(int(uid))
+                    if member:
+                        resolved[uid] = member.display_name
+                    else:
+                        return match.group(0)  # leave unresolvable mentions as-is
+                return f"@{resolved[uid]}"
+
+            message.content = re.sub(r"<@!?(\d{17,20})>", _resolve_mention, message.content)
+        elif isinstance(message.channel, discord.DMChannel):
+            # In DMs, only the two participants exist — resolve from mentions
+            for mentioned in message.mentions:
+                message.content = message.content.replace(
+                    f"<@{mentioned.id}>", f"@{mentioned.display_name}"
+                ).replace(
+                    f"<@!{mentioned.id}>", f"@{mentioned.display_name}"
+                )
+
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
