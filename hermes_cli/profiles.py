@@ -499,6 +499,33 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
 
 
+def _read_profile_kanban_acp(name: str) -> tuple:
+    """Read the kanban ACP config for a profile.
+
+    Returns ``(acp_command, acp_args)`` where *acp_command* is the string
+    value of ``kanban.acp_command`` (or ``None`` when absent) and
+    *acp_args* is a list of strings from ``kanban.acp_args`` (default []).
+    """
+    profile_dir = get_profile_dir(name)
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return None, []
+    try:
+        import yaml
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        kanban_cfg = cfg.get("kanban", {})
+        if not isinstance(kanban_cfg, dict):
+            return None, []
+        acp_command = kanban_cfg.get("acp_command")
+        acp_args = kanban_cfg.get("acp_args", [])
+        if isinstance(acp_args, str):
+            acp_args = [acp_args]
+        return acp_command, list(acp_args or [])
+    except Exception:
+        return None, []
+
+
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
