@@ -6498,6 +6498,58 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # Branch 1: ACP subprocess (e.g. claude, codex) when the profile's
+    # kanban config sets acp_command.  Fire-and-forget: the ACP agent
+    # receives the task body as its initial prompt, runs to completion,
+    # and the dispatcher observes its PID for crash detection just like
+    # a native Hermes worker.
+    from hermes_cli.profiles import _read_profile_kanban_acp
+
+    acp_command, acp_args = _read_profile_kanban_acp(profile_arg)
+
+    # Redirect output to a per-task log under <board-root>/logs/.
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+
+    if acp_command:
+        acp_prompt = (task.body or "").strip()
+        if not acp_prompt:
+            acp_prompt = f"Work on kanban task {task.id}."
+        cmd = [acp_command] + list(acp_args or [])
+        # Automatically inject -p for claude-style tools so they run
+        # non-interactively and exit after processing the prompt.
+        # Users can override by including -p/--print in their acp_args.
+        _basename = os.path.basename(acp_command)
+        if _basename in ("claude", "claude-code"):
+            if "-p" not in cmd and "--print" not in cmd:
+                cmd.append("-p")
+        cmd.append(acp_prompt)
+        # Use 'a' so a re-run on unblock appends rather than overwrites.
+        log_f = open(log_path, "ab")
+        try:
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError(
+                f"ACP command '{acp_command}' not found on PATH. "
+                f"Install it or update the profile's kanban.acp_command setting."
+            )
+        # NOTE: intentionally do NOT close log_f — the child inherits the FD.
+        return proc.pid
+
+    # Branch 2: Native Hermes worker (default, backward compatible).
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -6540,16 +6592,6 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
-    # Redirect output to a per-task log under <board-root>/logs/.
-    # Anchored at the board root (not the shared kanban root), so
-    # `hermes kanban log` on a specific board reads its own file and
-    # logs don't collide across boards that happen to share task ids.
-    log_dir = worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
-
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
     try:
