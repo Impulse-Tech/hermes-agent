@@ -1315,7 +1315,42 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parent_workspace_default(conn, parents: tuple[str, ...]) -> Optional[str]:
+    """Return a workspace value inherited from *parents*, or None.
+
+    If all non-scratch parents share the same workspace (kind + path),
+    return ``kind`` or ``kind:path`` so it can be fed to
+    ``_parse_workspace_flag``.  Otherwise returns None so the caller
+    falls back to the default workspace resolution.
+    """
+    if not parents:
+        return None
+    rows = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id IN ("
+        + ",".join("?" * len(parents))
+        + ")",
+        list(parents),
+    ).fetchall()
+    candidates: set[tuple[str, Optional[str]]] = set()
+    for r in rows:
+        kind = r["workspace_kind"]
+        path = r["workspace_path"]
+        if kind == "scratch" and path is None:
+            continue
+        candidates.add((kind, path))
+    if len(candidates) == 1:
+        kind, path = candidates.pop()
+        return f"{kind}:{path}" if path else kind
+    return None
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
+    # Resolution order: explicit --workspace > parent workspace > default.
+    if args.workspace is None and args.parent:
+        with kb.connect() as conn:
+            resolved = _parent_workspace_default(conn, tuple(args.parent))
+        if resolved:
+            args.workspace = resolved
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
