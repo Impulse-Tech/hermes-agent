@@ -852,6 +852,8 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if "response_prefix" in platform_cfg:
+                    bridged["response_prefix"] = platform_cfg["response_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
