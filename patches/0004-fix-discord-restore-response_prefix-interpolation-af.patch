@@ -1,78 +1,67 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Hermes Coder <coder@hermes.local>
-Date: Sun, 7 Jun 2026 18:23:56 +1000
-Subject: [PATCH] fix(discord): restore response_prefix interpolation after
- plugin refactor
+Date: Tue, 13 Oct 2026 23:26:53 +1100
+Subject: [PATCH] =?UTF-8?q?fix(discord):=20restore=20response=5Fprefix=20i?=
+ =?UTF-8?q?nterpolation=20after=20plugin=20refactor=20(hand-ported=20patch?=
+ =?UTF-8?q?=200004=20onto=20run=5Fturn.py/delivery=20split;=20config-bridg?=
+ =?UTF-8?q?ing=20piece=20now=20redundant=20=E2=80=94=20upstream's=20#10206?=
+ =?UTF-8?q?=20generic=20non-typed-key=20passthrough=20already=20promotes?=
+ =?UTF-8?q?=20response=5Fprefix=20to=20extra)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-The 2026-05-31 upstream refactor moved gateway/platforms/discord.py to
-plugins/platforms/discord/adapter.py but dropped the response_prefix
-implementation along the way (config bridging + adapter helpers + post-
-agent-run model context update were all deleted). The discord.response_prefix
-config key was left intact but unread.
-
-Ports the prefix mechanism to the new locations:
-- plugins/platforms/discord/adapter.py: _extract_model_parts() +
-  interpolate_response_prefix() helpers, _response_prefix_context state +
-  update_response_prefix_context() method, send-time prefix application.
-- gateway/config.py: re-bridge response_prefix into the platform extra dict.
-- gateway/run.py: re-install the post-agent-run hook that pushes the
-  actually-used model into the adapter's prefix context (for fallbacks).
-
-This is the second time this regression has occurred (first in April 2026).
-Going forward the patch is tracked in patches/ to survive future upstream
-syncs.
 ---
- gateway/config.py                    |  2 +
- gateway/run.py                       | 17 +++++-
+ gateway/run_turn.py                  | 17 +++++-
  plugins/platforms/discord/adapter.py | 79 ++++++++++++++++++++++++++++
- 3 files changed, 97 insertions(+), 1 deletion(-)
+ 2 files changed, 94 insertions(+), 2 deletions(-)
 
-diff --git a/gateway/config.py b/gateway/config.py
-index b39ae8cfcb..f05a1c1388 100644
---- a/gateway/config.py
-+++ b/gateway/config.py
-@@ -1544,6 +1544,8 @@ def load_gateway_config() -> GatewayConfig:
-                     )
-                 if "reply_prefix" in platform_cfg:
-                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
-+                if "response_prefix" in platform_cfg:
-+                    bridged["response_prefix"] = platform_cfg["response_prefix"]
-                 if "reply_in_thread" in platform_cfg:
-                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
-                 if "cron_continuable_surface" in platform_cfg:
-diff --git a/gateway/run.py b/gateway/run.py
-index 43853f9b66..005552c10d 100644
---- a/gateway/run.py
-+++ b/gateway/run.py
-@@ -16938,7 +16938,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
-                 **hook_ctx,
-                 "response": (response or "")[:500],
-             })
--            
-+
-+            # Update Discord adapter's response prefix context with the
-+            # actual model used for this reply (important for fallbacks).
-+            # This must happen before the response is sent via adapter.send().
-+            _prefix_adapter = self.adapters.get(source.platform)
-+            if (
-+                source.platform == Platform.DISCORD
-+                and _prefix_adapter
-+                and hasattr(_prefix_adapter, "update_response_prefix_context")
-+            ):
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 068f8240ed..a2e22c1dd2 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -1655,13 +1655,26 @@ class GatewayTurnMixin:
+             logger.debug("runtime_footer build failed: %s", _footer_err)
+             return ""
+ 
+-    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
++    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response, source=None):
+         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
+         await self.hooks.emit("agent:end", {
+             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
+             "provider": agent_result.get("provider", ""),
+         })
+ 
++        # Discord-only: push the actually-used model into the adapter's response-prefix
++        # context before any adapter.send() call for this turn, so a fallback model shows
++        # up correctly in the "[Hermes · {model}]" prefix instead of the configured default.
++        if source is not None and source.platform == Platform.DISCORD:
++            _prefix_adapter = self._delivery_adapter_for(source)
++            if _prefix_adapter is not None and hasattr(_prefix_adapter, "update_response_prefix_context"):
 +                try:
++                    from gateway.run import _resolve_gateway_model
 +                    _resolved_model = agent_result.get("model") or _resolve_gateway_model()
 +                    _prefix_adapter.update_response_prefix_context(model_full=_resolved_model)
 +                except Exception:
 +                    pass
 +
-             # Check for pending process watchers (check_interval on background processes)
-             try:
-                 from tools.process_registry import process_registry
+         # Pending process watchers (check_interval on background processes)
+         try:
+             from tools.process_registry import process_registry
+@@ -2243,7 +2256,7 @@ class GatewayTurnMixin:
+             # Streaming already delivered the body: the footer goes out as a trailing send instead.
+             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                 response = f"{response}\n\n{_footer_line}"
+-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
++            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response, source)
+ 
+             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
+                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
 diff --git a/plugins/platforms/discord/adapter.py b/plugins/platforms/discord/adapter.py
-index 50d6e97643..245abe07c7 100644
+index e9a5e79a9c..0191544dd9 100644
 --- a/plugins/platforms/discord/adapter.py
 +++ b/plugins/platforms/discord/adapter.py
-@@ -375,6 +375,52 @@ def check_discord_requirements() -> bool:
+@@ -656,6 +656,52 @@ def check_discord_requirements() -> bool:
      return True
  
  
@@ -122,26 +111,25 @@ index 50d6e97643..245abe07c7 100644
 +        return template
 +
 +
- def _build_allowed_mentions():
-     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
- 
-@@ -1014,6 +1060,28 @@ class DiscordAdapter(BasePlatformAdapter):
-         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
-         self._last_overflow_preview: Dict[tuple, str] = {}
+ def _build_allowed_mentions(extra: Optional[dict] = None):
+     """Build Discord ``AllowedMentions`` denying @everyone/@here/roles by default (any LLM output
+     with ``@everyone`` would otherwise ping the server); user / replied-user pings stay on.
+@@ -1388,6 +1434,27 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
+         # Telegram #58563 fix.
+         self._last_overflow_preview: dict[tuple, str] = {}
          self._warned_fail_closed_default = False
 +        # Response prefix context: updated per-reply by the gateway before
 +        # sending, so the prefix reflects the actual model used (important
-+        # for fallbacks).  The ``response_prefix`` template itself comes from
-+        # ``discord.response_prefix`` in config.yaml (bridged to extra dict).
-+        # Seed with the gateway's configured default model; the gateway
-+        # updates this per-reply after each agent run.
++        # for fallbacks). The ``response_prefix`` template itself comes from
++        # ``discord.response_prefix`` in config.yaml (promoted into extra by
++        # PlatformConfig.from_dict's non-typed-key passthrough).
 +        _init_model = os.getenv("HERMES_MODEL", "") or self.config.extra.get("model", "")
-+        self._response_prefix_context: Dict[str, str] = {
++        self._response_prefix_context: dict[str, str] = {
 +            "name": "Hermes",
 +            "model_full": _init_model,
 +        }
 +
-+    def update_response_prefix_context(self, *, name: str = None, model_full: str = None) -> None:
++    def update_response_prefix_context(self, *, name: Optional[str] = None, model_full: Optional[str] = None) -> None:
 +        """Update the response prefix context with the current model info.
 +
 +        Called by the gateway after each agent run so the prefix reflects the
@@ -152,13 +140,15 @@ index 50d6e97643..245abe07c7 100644
 +        if model_full is not None:
 +            self._response_prefix_context["model_full"] = model_full
  
-     def _config_value(
-         self, key: str, default: Any, *, env_key: Optional[str] = None
-@@ -2912,6 +2980,17 @@ class DiscordAdapter(BasePlatformAdapter):
-         if not self._client:
-             return SendResult(success=False, error="Not connected")
- 
-+        # Apply response prefix if configured (opt-in via discord.response_prefix)
+     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
+         """Resolve a liveness value from profile config, legacy env, or default."""
+@@ -3309,6 +3376,18 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
+             result = SendResult(success=False, error="Refusing to send empty message")
+             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
+             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
++        # Apply response prefix if configured (opt-in via discord.response_prefix).
++        # Must run after the empty-content guard above so an empty agent reply
++        # is still dropped rather than silently becoming "just the prefix".
 +        _prefix_template = self.config.extra.get("response_prefix", "")
 +        if _prefix_template:
 +            _prefix = interpolate_response_prefix(
@@ -166,12 +156,11 @@ index 50d6e97643..245abe07c7 100644
 +                name=self._response_prefix_context.get("name", "Hermes"),
 +                model_full=self._response_prefix_context.get("model_full", ""),
 +            )
-+            if _prefix and content:
++            if _prefix:
 +                content = f"{_prefix} {content}"
-+
          try:
-             # Determine target channel: thread_id in metadata takes precedence.
              thread_id = None
+             if metadata and metadata.get("thread_id"):
 -- 
 2.43.0
 

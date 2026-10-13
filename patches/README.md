@@ -49,11 +49,12 @@ This is also the trigger for updating the `Last verified` line in the `.md` to t
 | # | Title | Status |
 |---|---|---|
 | 0001 | discord: resolve <@ID> to @DisplayName (truncation half dropped, superseded upstream) | fork-only |
-| 0002 | kanban: child tasks inherit parent workspace | fork-only |
-| 0003 | kanban: ACP subprocess spawning for workers | fork-only |
-| 0004 | discord: restore response_prefix interpolation | fork-only |
-| 0005 | kanban: isolate ACP claude-coder workers from chat session credentials | fork-only |
-| 0006 | discord: source response_prefix name from config instead of hardcoded "Hermes" | fork-only |
+| 0002 | kanban: child tasks inherit parent workspace | **superseded-by-upstream, dropped 2026-10-13** — see `0002-*.md`; `.patch` removed, `.md` kept for history |
+| 0003 | kanban: ACP subprocess spawning for workers | fork-only — hand-ported 2026-10-13 onto `kanban_db_dispatch.py` |
+| 0004 | discord: restore response_prefix interpolation | fork-only — hand-ported 2026-10-13 onto `gateway/run_turn.py`; config-bridging third dropped (now redundant) |
+| 0005 | kanban: isolate ACP claude-coder workers from chat session credentials | fork-only — hand-ported 2026-10-13, auth-race rationale superseded (long-lived OAUTH token) but isolation kept |
+| 0006 | discord: source response_prefix name from config instead of hardcoded "Hermes" | fork-only — hand-ported 2026-10-13; config-bridging half dropped (now redundant) |
+| 0007 | kanban: `--` end-of-options marker before ACP prompt (argv flag-injection fix) | fork-only — new 2026-10-13, found by security-review hook during the 0003 replay |
 
 ## Adding a new patch
 

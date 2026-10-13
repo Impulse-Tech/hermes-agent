@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Hermes Coder <coder@hermes.local>
+Date: Tue, 13 Oct 2026 23:18:41 +1100
+Subject: [PATCH] fix(kanban): use -- end-of-options marker before ACP prompt
+ to prevent argv flag injection from task body
+
+---
+ hermes_cli/kanban_db_dispatch.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/hermes_cli/kanban_db_dispatch.py b/hermes_cli/kanban_db_dispatch.py
+index 898ebf5779..95b1205ef6 100644
+--- a/hermes_cli/kanban_db_dispatch.py
++++ b/hermes_cli/kanban_db_dispatch.py
+@@ -2955,7 +2955,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
+         if _basename in ("claude", "claude-code"):
+             if "-p" not in acp_cmd and "--print" not in acp_cmd:
+                 acp_cmd.append("-p")
+-        acp_cmd.append(acp_prompt)
++        # "--" marks end-of-options so a body starting with "-" is never
++        # parsed as a flag by the ACP command.
++        acp_cmd.extend(["--", acp_prompt])
+         acp_cmd = _restart_safe_worker_argv(task, acp_cmd)
+         from tools.process_registry import systemd_user_bus_env
+         env = systemd_user_bus_env(env)
+-- 
+2.43.0
+

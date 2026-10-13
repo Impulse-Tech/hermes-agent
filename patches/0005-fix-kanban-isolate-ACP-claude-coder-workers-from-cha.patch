@@ -1,33 +1,30 @@
-From b2e27e190264bd31d83d94b207b63380e7c6c1b8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Hermes Coder <coder@hermes.local>
-Date: Wed, 8 Jul 2026 12:02:43 +1000
+Date: Tue, 13 Oct 2026 23:30:25 +1100
 Subject: [PATCH] fix(kanban): isolate ACP claude-coder workers from chat
- session credentials
+ session credentials (hand-ported patch 0005 onto the patch-0003 ACP branch in
+ kanban_db_dispatch.py)
 
-Kanban claude-coder workers and the Hermes chat session's `claude` CLI
-both read/write ~/.claude/.credentials.json. A concurrent token refresh
-between the two zeroed out both tokens (2026-07-07 incident). Point
-kanban's claude/claude-code spawns at CLAUDE_CONFIG_DIR=~/.claude-kanban
-instead, so worker auth is isolated from the chat session's.
 ---
- hermes_cli/kanban_db.py | 4 ++++
- 1 file changed, 4 insertions(+)
+ hermes_cli/kanban_db_dispatch.py | 5 +++++
+ 1 file changed, 5 insertions(+)
 
-diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index aa92287a8..bb835dac4 100644
---- a/hermes_cli/kanban_db.py
-+++ b/hermes_cli/kanban_db.py
-@@ -6526,6 +6526,10 @@ def _default_spawn(
+diff --git a/hermes_cli/kanban_db_dispatch.py b/hermes_cli/kanban_db_dispatch.py
+index 95b1205ef6..0e47c02bc7 100644
+--- a/hermes_cli/kanban_db_dispatch.py
++++ b/hermes_cli/kanban_db_dispatch.py
+@@ -2955,6 +2955,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
          if _basename in ("claude", "claude-code"):
-             if "-p" not in cmd and "--print" not in cmd:
-                 cmd.append("-p")
+             if "-p" not in acp_cmd and "--print" not in acp_cmd:
+                 acp_cmd.append("-p")
 +            # Isolate kanban claude-coder workers from the chat session's
-+            # ~/.claude/.credentials.json — a concurrent token refresh
-+            # between the two zeroed out both tokens (2026-07-07 incident).
++            # ~/.claude/.credentials.json — keeps automated session history,
++            # project trust state, and crash blast radius separate even
++            # though CLAUDE_CODE_OAUTH_TOKEN now makes both paths token-stable.
 +            env.setdefault("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude-kanban"))
-         cmd.append(acp_prompt)
-         # Use 'a' so a re-run on unblock appends rather than overwrites.
-         log_f = open(log_path, "ab")
+         # "--" marks end-of-options so a body starting with "-" is never
+         # parsed as a flag by the ACP command.
+         acp_cmd.extend(["--", acp_prompt])
 -- 
 2.43.0
 

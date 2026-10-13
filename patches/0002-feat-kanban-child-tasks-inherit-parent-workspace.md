@@ -15,10 +15,10 @@ Upstream adds inheritance natively. Watch for any commit to `hermes_cli/kanban.p
 3. Verify child task's workspace equals parent's: `hermes kanban get <child-id>` should show `workspace: /tmp/test-ws`.
 
 ## Status
-fork-only
+**superseded-by-upstream, dropped 2026-10-13** — upstream now has native, more sophisticated workspace inheritance in `hermes_cli/kanban_db_graph.py` (`_insert_decomposed_child`): per-child `workspace_kind`/`workspace_path` override wins, else inherits the root's kind; path inherits only when kinds match, and NEVER for `worktree` kind (the fork's old patch would have handed every decomposed sibling the same worktree checkout — a concurrent-dispatch race this patch never accounted for). The "Skip when" condition on this patch fired exactly as designed. Do not re-apply; file kept for historical reference only.
 
 ## Last verified
-2026-06-07 against upstream commit `1fc7bdc5e64e052bc61d3ddb9e6f96cf6c7461dc`
+2026-10-13 against upstream commit `9e041a7428392b01b989ef9cecf46a5f96be12fc` — confirmed superseded, `git am` fails (anchor function moved/restructured) and no longer needed. See `hermes_cli/kanban_db_graph.py` lines ~169-199 for the replacement.
 
 ## Original commit
 `95ca99a47` — `feat(kanban): child tasks inherit parent workspace`

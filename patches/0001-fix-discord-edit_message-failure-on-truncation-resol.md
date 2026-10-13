@@ -19,7 +19,7 @@ Originally two related Discord-adapter fixes bundled in one commit; now just one
 fork-only (Yang declined upstream PR) — **part 1 (edit_message truncation) dropped 2026-08-01**: upstream's `edit_message()` now has a native, more sophisticated fix (`finalize` flag, `_edit_overflow_split`, saturated-preview dedup, reactive split-on-Discord-error) that supersedes the old truncate-with-"..." patch. Only part 2 (mention resolution) still applies.
 
 ## Last verified
-2026-08-01 against upstream commit `470cf66b039c73bdd2c21d43094ce41a4db74eae` (origin/main HEAD)
+2026-10-13 against upstream commit `9e041a7428392b01b989ef9cecf46a5f96be12fc` — applied cleanly via `git am --3way`, zero conflicts (31,973-commit sync from the previous 2026-08-01 base).
 
 ## Original commit
-`9e341c745` — `fix(discord): edit_message failure on truncation + resolve <@ID> to @DisplayName` (superseded by `8a888a9c3c` on the 2026-08-01 upstream-sync branch, part-1-only)
+`9e341c745` — `fix(discord): edit_message failure on truncation + resolve <@ID> to @DisplayName` (superseded by `8a888a9c3c` on the 2026-08-01 upstream-sync branch, part-1-only; replayed again unchanged as `74af46e313` on 2026-10-13)
