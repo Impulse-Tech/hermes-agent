@@ -656,6 +656,52 @@ def check_discord_requirements() -> bool:
     return True
 
 
+def _extract_model_parts(model_full: str) -> dict:
+    """Extract provider, short model name, and full model from a model string.
+
+    Handles provider-prefixed model names like ``openrouter/z-ai/glm-5.1``
+    by splitting on ``/`` — everything before the last segment is the provider,
+    and the last segment is the short model name.
+
+    Returns a dict with keys: ``model``, ``modelFull``, ``provider``.
+    """
+    if not model_full:
+        return {"model": "", "modelFull": "", "provider": ""}
+    parts = model_full.split("/")
+    if len(parts) > 1:
+        provider = "/".join(parts[:-1])
+        short_name = parts[-1]
+    else:
+        provider = ""
+        short_name = model_full
+    return {"model": short_name, "modelFull": model_full, "provider": provider}
+
+
+def interpolate_response_prefix(template: str, *, name: str = "Hermes", model_full: str = "") -> str:
+    """Interpolate a response prefix template with agent context variables.
+
+    Supported variables:
+    - ``{name}`` — agent display name (from config, default "Hermes")
+    - ``{model}`` — short model name (e.g. ``glm-5.1``)
+    - ``{modelFull}`` — full model name with provider (e.g. ``openrouter/z-ai/glm-5.1``)
+    - ``{provider}`` — provider name only (e.g. ``openrouter``)
+
+    Returns the interpolated string, or an empty string if the template is empty.
+    """
+    if not template:
+        return ""
+    parts = _extract_model_parts(model_full)
+    try:
+        return template.format(
+            name=name,
+            model=parts["model"],
+            modelFull=parts["modelFull"],
+            provider=parts["provider"],
+        )
+    except (KeyError, IndexError):
+        return template
+
+
 def _build_allowed_mentions(extra: Optional[dict] = None):
     """Build Discord ``AllowedMentions`` denying @everyone/@here/roles by default (any LLM output
     with ``@everyone`` would otherwise ping the server); user / replied-user pings stay on.
@@ -1388,6 +1434,27 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Telegram #58563 fix.
         self._last_overflow_preview: dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+        # Response prefix context: updated per-reply by the gateway before
+        # sending, so the prefix reflects the actual model used (important
+        # for fallbacks). The ``response_prefix`` template itself comes from
+        # ``discord.response_prefix`` in config.yaml (promoted into extra by
+        # PlatformConfig.from_dict's non-typed-key passthrough).
+        _init_model = os.getenv("HERMES_MODEL", "") or self.config.extra.get("model", "")
+        self._response_prefix_context: dict[str, str] = {
+            "name": "Hermes",
+            "model_full": _init_model,
+        }
+
+    def update_response_prefix_context(self, *, name: Optional[str] = None, model_full: Optional[str] = None) -> None:
+        """Update the response prefix context with the current model info.
+
+        Called by the gateway after each agent run so the prefix reflects the
+        actual model that generated the response (important for fallbacks).
+        """
+        if name is not None:
+            self._response_prefix_context["name"] = name
+        if model_full is not None:
+            self._response_prefix_context["model_full"] = model_full
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -3309,6 +3376,18 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             result = SendResult(success=False, error="Refusing to send empty message")
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
+        # Apply response prefix if configured (opt-in via discord.response_prefix).
+        # Must run after the empty-content guard above so an empty agent reply
+        # is still dropped rather than silently becoming "just the prefix".
+        _prefix_template = self.config.extra.get("response_prefix", "")
+        if _prefix_template:
+            _prefix = interpolate_response_prefix(
+                _prefix_template,
+                name=self._response_prefix_context.get("name", "Hermes"),
+                model_full=self._response_prefix_context.get("model_full", ""),
+            )
+            if _prefix:
+                content = f"{_prefix} {content}"
         try:
             thread_id = None
             if metadata and metadata.get("thread_id"):
