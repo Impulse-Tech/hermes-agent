@@ -2955,7 +2955,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         if _basename in ("claude", "claude-code"):
             if "-p" not in acp_cmd and "--print" not in acp_cmd:
                 acp_cmd.append("-p")
-        acp_cmd.append(acp_prompt)
+        # "--" marks end-of-options so a body starting with "-" is never
+        # parsed as a flag by the ACP command.
+        acp_cmd.extend(["--", acp_prompt])
         acp_cmd = _restart_safe_worker_argv(task, acp_cmd)
         from tools.process_registry import systemd_user_bus_env
         env = systemd_user_bus_env(env)
