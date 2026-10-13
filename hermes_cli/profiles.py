@@ -775,6 +775,35 @@ def _read_config_model(profile_dir: Path) -> tuple:
     return _cached_profile_read(config_path, "config-model", _read)
 
 
+def _read_profile_kanban_acp(name: str) -> tuple:
+    """Read the kanban ACP config for a profile.
+
+    Returns ``(acp_command, acp_args)`` where *acp_command* is the string
+    value of ``kanban.acp_command`` (or ``None`` when absent) and
+    *acp_args* is a list of strings from ``kanban.acp_args`` (default []).
+    """
+    profile_dir = get_profile_dir(name)
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return None, []
+
+    def _read() -> tuple:
+        try:
+            from hermes_cli.config import read_user_config_raw
+            kanban_cfg = read_user_config_raw(config_path).get("kanban", {})
+            if not isinstance(kanban_cfg, dict):
+                return None, []
+            acp_command = kanban_cfg.get("acp_command")
+            acp_args = kanban_cfg.get("acp_args", [])
+            if isinstance(acp_args, str):
+                acp_args = [acp_args]
+            return acp_command, list(acp_args or [])
+        except Exception:
+            return None, []
+
+    return _cached_profile_read(config_path, "kanban-acp", _read)
+
+
 def launch_model_seed(source_cfg: dict) -> dict:
     """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
     when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that

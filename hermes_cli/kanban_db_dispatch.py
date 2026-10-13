@@ -2934,6 +2934,55 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    # Branch 1: ACP subprocess (e.g. claude, codex) when the profile's
+    # kanban config sets acp_command. Fire-and-forget: the ACP agent
+    # receives the task body as its initial prompt, runs to completion,
+    # and the dispatcher observes its PID for crash detection just like
+    # a native Hermes worker.
+    from hermes_cli.profiles import _read_profile_kanban_acp
+
+    acp_command, acp_args = _read_profile_kanban_acp(profile_arg)
+
+    if acp_command:
+        acp_prompt = (task.body or "").strip()
+        if not acp_prompt:
+            acp_prompt = f"Work on kanban task {task.id}."
+        acp_cmd = [acp_command] + list(acp_args or [])
+        # Automatically inject -p for claude-style tools so they run
+        # non-interactively and exit after processing the prompt. Users
+        # can override by including -p/--print in their acp_args.
+        _basename = os.path.basename(acp_command)
+        if _basename in ("claude", "claude-code"):
+            if "-p" not in acp_cmd and "--print" not in acp_cmd:
+                acp_cmd.append("-p")
+        acp_cmd.append(acp_prompt)
+        acp_cmd = _restart_safe_worker_argv(task, acp_cmd)
+        from tools.process_registry import systemd_user_bus_env
+        env = systemd_user_bus_env(env)
+        log_f = _open_worker_log(task, board)
+        try:
+            proc = subprocess.Popen(
+                acp_cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError(
+                f"ACP command '{acp_command}' not found on PATH. "
+                f"Install it or update the profile's kanban.acp_command setting."
+            )
+        # Intentionally NOT closing log_f: the child keeps writing after return.
+        if _kb._IS_WINDOWS:
+            _live_worker_procs[proc.pid] = proc
+        return proc.pid
+
+    # Branch 2: Native Hermes worker (default, backward compatible).
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
     # The module argv must carry the import context that made it resolvable:
     # the shim's in-process path injection is invisible to the bare child.
