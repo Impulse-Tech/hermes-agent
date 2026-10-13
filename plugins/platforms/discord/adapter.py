@@ -1441,7 +1441,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # PlatformConfig.from_dict's non-typed-key passthrough).
         _init_model = os.getenv("HERMES_MODEL", "") or self.config.extra.get("model", "")
         self._response_prefix_context: dict[str, str] = {
-            "name": "Hermes",
+            "name": self.config.extra.get("response_prefix_name") or "Hermes",
             "model_full": _init_model,
         }
 
