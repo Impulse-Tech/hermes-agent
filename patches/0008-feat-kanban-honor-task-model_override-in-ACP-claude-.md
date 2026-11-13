@@ -41,7 +41,7 @@ First real dispatch should also be confirmed from `~/.claude-kanban/projects/*/*
 ### Solution: wrapper as `kanban.acp_command`
 - `patches/support/claude-coder-wrapper.sh` (tracked in the fork, commit `6493c95514`).
 - Installed as `~/.hermes/profiles/claude-coder/bin/claude`, a symlink to the tracked file. `kanban.acp_command` in the profile `config.yaml` (untracked) points at that path.
-- It reads `CLAUDE_CODE_OAUTH_TOKEN` from `~/.hermes/profiles/claude-coder/.env` (override: `CLAUDE_CODER_ENV_FILE` -> `CLAUDE_CODER_ENV_FILE`), exports it, and `exec`s the real CLI. It runs inside the worker process, after the dispatcher's stripping, so the token survives. Token goes in env only, never argv (`ps`-visible), never printed.
+- It reads `CLAUDE_CODE_OAUTH_TOKEN` from `~/.hermes/profiles/claude-coder/.env` (override: `CLAUDE_CODER_ENV_FILE`), exports it, and `exec`s the real CLI. It runs inside the worker process, after the dispatcher's stripping, so the token survives. Token goes in env only, never argv (`ps`-visible), never printed.
 - Real CLI lookup order: `$CLAUDE_REAL_BIN`, newest `~/.nvm/versions/node/*/bin/claude`, first non-wrapper `claude` on `PATH`. No hardcoded Node version. Exits 127 if none found.
 - **The wrapper must be named `claude`** (symlink name counts; the dispatcher checks the unresolved basename at `kanban_db_dispatch.py` ~2954). Any other name skips the `-p`, `CLAUDE_CONFIG_DIR` and `--model` override handling (0008).
 - The token lives only in `claude-coder`'s `.env`, not in `~/.hermes/.env`.
