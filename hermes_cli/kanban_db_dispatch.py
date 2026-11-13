@@ -2960,6 +2960,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             # project trust state, and crash blast radius separate even
             # though CLAUDE_CODE_OAUTH_TOKEN now makes both paths token-stable.
             env.setdefault("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude-kanban"))
+            # Per-task model override (`hermes kanban create --model X`):
+            # replace any profile-level --model with the task's value.
+            if task.model_override:
+                for _i, _a in enumerate(acp_cmd):
+                    if _a == "--model" and _i + 1 < len(acp_cmd):
+                        del acp_cmd[_i:_i + 2]
+                        break
+                acp_cmd.extend(["--model", task.model_override])
         # "--" marks end-of-options so a body starting with "-" is never
         # parsed as a flag by the ACP command.
         acp_cmd.extend(["--", acp_prompt])
