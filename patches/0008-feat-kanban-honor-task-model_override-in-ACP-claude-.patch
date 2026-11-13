@@ -1,0 +1,33 @@
+From 013cdb53276800a0079c27a05b04f2f1f87ec006 Mon Sep 17 00:00:00 2001
+From: Hermes Coder <coder@hermes.local>
+Date: Fri, 13 Nov 2026 15:42:41 +1100
+Subject: [PATCH] feat(kanban): honor task model_override in ACP claude branch
+ (patch 0008)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ hermes_cli/kanban_db_dispatch.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/hermes_cli/kanban_db_dispatch.py b/hermes_cli/kanban_db_dispatch.py
+index 0e47c02bc7..86a58fb9a6 100644
+--- a/hermes_cli/kanban_db_dispatch.py
++++ b/hermes_cli/kanban_db_dispatch.py
+@@ -2960,6 +2960,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
+             # project trust state, and crash blast radius separate even
+             # though CLAUDE_CODE_OAUTH_TOKEN now makes both paths token-stable.
+             env.setdefault("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude-kanban"))
++            # Per-task model override (`hermes kanban create --model X`):
++            # replace any profile-level --model with the task's value.
++            if task.model_override:
++                for _i, _a in enumerate(acp_cmd):
++                    if _a == "--model" and _i + 1 < len(acp_cmd):
++                        del acp_cmd[_i:_i + 2]
++                        break
++                acp_cmd.extend(["--model", task.model_override])
+         # "--" marks end-of-options so a body starting with "-" is never
+         # parsed as a flag by the ACP command.
+         acp_cmd.extend(["--", acp_prompt])
+-- 
+2.43.0
+

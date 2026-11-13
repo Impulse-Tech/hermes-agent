@@ -55,6 +55,7 @@ This is also the trigger for updating the `Last verified` line in the `.md` to t
 | 0005 | kanban: isolate ACP claude-coder workers from chat session credentials | fork-only — hand-ported 2026-10-13, auth-race rationale superseded (long-lived OAUTH token) but isolation kept |
 | 0006 | discord: source response_prefix name from config instead of hardcoded "Hermes" | fork-only — hand-ported 2026-10-13; config-bridging half dropped (now redundant) |
 | 0007 | kanban: `--` end-of-options marker before ACP prompt (argv flag-injection fix) | fork-only — new 2026-10-13, found by security-review hook during the 0003 replay |
+| 0008 | kanban: honor task `model_override` in ACP `claude` branch (tiered Sonnet/Opus) | fork-only — new 2026-11-13 |
 
 ## Adding a new patch
 
